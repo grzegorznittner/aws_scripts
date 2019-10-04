@@ -38,7 +38,12 @@ def s3_modify_access_log(bucket_name, log_bucket, log_prefix):
 
 def s3_get_bucket_location(bucket_name):
     try:
-        return AWS_S3_CLIENT.get_bucket_location(Bucket=bucket_name)['LocationConstraint']
+        location = AWS_S3_CLIENT.get_bucket_location(Bucket=bucket_name)
+        #print(' --- bucket {} region: {}'.format(location, location['LocationConstraint']))
+        if location['LocationConstraint']!=None:
+            return location['LocationConstraint']
+        else:
+            return 'us-east-1'
     except Exception as e:
         print(e)
         print(traceback.format_exc())
@@ -54,18 +59,24 @@ def s3_set_access_log(bucket_name):
         return
     log_def = AWS_S3_CLIENT.get_bucket_logging(Bucket=bucket_name)
     #print(">>>>> " + json.dumps(log_def))
-    log_bucket = None
-    if 'LoggingEnabled' in log_def:
+    set_logs = True
+    
+    if 'LoggingEnabled' in log_def and 'TargetBucket' in log_def['LoggingEnabled']:
         log_bucket = "arn:aws:s3:::" + log_def['LoggingEnabled']['TargetBucket']
+        #print(' --- logging target bucket: ' + log_bucket)
         if log_def['LoggingEnabled']['TargetPrefix']: 
             log_bucket += "/" + log_def['LoggingEnabled']['TargetPrefix']
         log_bucket += " " + s3_get_bucket_location(log_def['LoggingEnabled']['TargetBucket'])
-        
-        print(' -- logging: {}'.format(log_bucket))
-    else:
+        if not log_def['LoggingEnabled']['TargetPrefix'].endswith('/'):
+            print(' -- logging needs to be fixed: {}'.format(log_bucket))
+            set_logs=True
+        else:
+            print(' -- logging: {}'.format(log_bucket))
+            set_logs=False
+    if set_logs:
         if bucket_region == TRAIL_S3_BUCKET_REGION:
             # set trail bucket as log bucket
-            s3_modify_access_log(bucket_name, TRAIL_S3_BUCKET, bucket_name)
+            s3_modify_access_log(bucket_name, TRAIL_S3_BUCKET, bucket_name + '/')
         else:
             # set access log to the logs folder in the same bucket, it should be rare that we have buckets in other regions
             s3_modify_access_log(bucket_name, bucket_name, 'logs/')
@@ -127,12 +138,14 @@ def s3_apply_https_only_policy(bucket_name):
 
 def fix_1_critical_s3_bucket_correctly_configured(bucket_name):
     try:
-        bucket_location = AWS_S3_CLIENT.get_bucket_location(Bucket=bucket_name)
-        #if bucket['Name'] == 'aws-codestar-eu-central-1-947012279941-lambda-test-pipe':
         print('######################################################')
-        print('# Bucket {} - {}'.format(bucket_name, bucket_location['LocationConstraint']) )
-        s3_apply_https_only_policy(bucket_name)
-        s3_set_access_log(bucket_name)
+        bucket_location = s3_get_bucket_location(bucket_name)
+        if bucket_location:
+            print('# Bucket {} - {}'.format(bucket_name, bucket_location) )
+            s3_apply_https_only_policy(bucket_name)
+            s3_set_access_log(bucket_name)
+        else:
+            print('# Bucket {} does not exist'.format(bucket_name) )
     except Exception as e:
         print(e)
         print(traceback.format_exc())
@@ -327,10 +340,10 @@ MEDIUM_RISKS=2
 LOW_RISKS=3
 
 get_trail_bucket_region()
-check_pcs_config_rules(MEDIUM_RISKS)
+#check_pcs_config_rules(MEDIUM_RISKS)
 
 
-# list_buckets_resp = AWS_S3_CLIENT.list_buckets()
-# for bucket in list_buckets_resp['Buckets']:
-#     fix_1_critical_s3_bucket_correctly_configured(bucket['Name'])
-    
+list_buckets_resp = AWS_S3_CLIENT.list_buckets()
+for bucket in list_buckets_resp['Buckets']:
+    fix_1_critical_s3_bucket_correctly_configured(bucket['Name'])
+

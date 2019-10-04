@@ -1,0 +1,290 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "Creates CloudFront distribution",
+  "Parameters" : {
+    "environment" : {
+      "Type" : "String",
+      "Description" : "Lowercase environment name (e.g. prod, pre, dev...etc.)"
+    },
+    "aliases" : {
+      "Type" : "CommaDelimitedList",
+      "Description" : "Alias(es) for distribution CNAMEs"
+    },
+    "originDomainNameAPI" : {
+      "Type" : "String",
+      "Description" : "Domain name of the API origin server"
+    },
+    "originDomainNameWeb" : {
+      "Type" : "String",
+      "Description" : "Domain name of the Web origin server"
+    },
+    "iamCertificateId" : {
+      "Type" : "String",
+      "Description" : "IAM certificate ID"
+    },
+    "context" : {
+      "Type" : "String",
+      "Description" : "Context for non-default cache behaviours"
+    }
+  },
+  "Resources" : {
+    "LogBucket" : {
+      "Type" : "AWS::S3::Bucket",
+      "Properties" : {
+        "BucketName" : {
+          "Fn::Join" : [ "-", [ "cdn", {
+            "Ref" : "environment"
+          }, "logs" ] ]
+        }
+      }
+    },
+    "ProtonCloudFrontDistribution" : {
+      "Type" : "AWS::CloudFront::Distribution",
+      "Properties" : {
+        "DistributionConfig" : {
+          "CacheBehaviors" : [ {
+            "PathPattern" : {
+              "Fn::Join" : [ "", [ {
+                "Ref" : "context"
+              }, "proton/catalog/category/root/*" ] ]
+            },
+            "TargetOriginId" : {
+              "Fn::Join" : [ "-", [ "proton-origin", {
+                "Ref" : "environment"
+              } ] ]
+            },
+            "ViewerProtocolPolicy" : "https-only",
+            "AllowedMethods" : [ "HEAD", "GET" ],
+            "CachedMethods" : [ "HEAD", "GET" ],
+            "ForwardedValues" : {
+              "Headers" : [ "Accept", "x-vf-start-api-key", "x-vf-start-device-model", "x-vf-start-os-version", "x-vf-start-type", "x-vf-start-version-code" ],
+              "Cookies" : {
+                "Forward" : "none"
+              },
+              "QueryString" : "false"
+            },
+            "SmoothStreaming" : "false",
+            "Compress" : "true"
+          }, {
+            "PathPattern" : {
+              "Fn::Join" : [ "", [ {
+                "Ref" : "context"
+              }, "proton/client/translation/*" ] ]
+            },
+            "TargetOriginId" : {
+              "Fn::Join" : [ "-", [ "proton-origin", {
+                "Ref" : "environment"
+              } ] ]
+            },
+            "ViewerProtocolPolicy" : "https-only",
+            "AllowedMethods" : [ "HEAD", "GET" ],
+            "CachedMethods" : [ "HEAD", "GET" ],
+            "ForwardedValues" : {
+              "Headers" : [ "Accept", "x-vf-start-api-key" ],
+              "Cookies" : {
+                "Forward" : "none"
+              },
+              "QueryString" : "false"
+            },
+            "SmoothStreaming" : "false",
+            "Compress" : "true"
+          }, {
+            "PathPattern" : {
+              "Fn::Join" : [ "", [ {
+                "Ref" : "context"
+              }, "proton/catalog/app/details/*" ] ]
+            },
+            "TargetOriginId" : {
+              "Fn::Join" : [ "-", [ "proton-origin", {
+                "Ref" : "environment"
+              } ] ]
+            },
+            "ViewerProtocolPolicy" : "https-only",
+            "AllowedMethods" : [ "HEAD", "GET" ],
+            "CachedMethods" : [ "HEAD", "GET" ],
+            "ForwardedValues" : {
+              "Headers" : [ "Accept", "x-vf-start-api-key" ],
+              "Cookies" : {
+                "Forward" : "none"
+              },
+              "QueryString" : "false"
+            },
+            "SmoothStreaming" : "false",
+            "Compress" : "true"
+          }, {
+            "PathPattern" : {
+              "Fn::Join" : [ "", [ {
+                "Ref" : "context"
+              }, "proton/client/settings/*" ] ]
+            },
+            "TargetOriginId" : {
+              "Fn::Join" : [ "-", [ "proton-origin", {
+                "Ref" : "environment"
+              } ] ]
+            },
+            "ViewerProtocolPolicy" : "https-only",
+            "AllowedMethods" : [ "HEAD", "GET" ],
+            "CachedMethods" : [ "HEAD", "GET" ],
+            "ForwardedValues" : {
+              "Headers" : [ "Accept", "x-vf-start-api-key" ],
+              "Cookies" : {
+                "Forward" : "none"
+              },
+              "QueryString" : "false"
+            },
+            "SmoothStreaming" : "false",
+            "Compress" : "true"
+          }, {
+            "PathPattern" : {
+              "Fn::Join" : [ "", [ {
+                "Ref" : "context"
+              }, "proton*/item/dynamic/*" ] ]
+            },
+            "TargetOriginId" : {
+              "Fn::Join" : [ "-", [ "proton-origin", {
+                "Ref" : "environment"
+              } ] ]
+            },
+            "ViewerProtocolPolicy" : "https-only",
+            "AllowedMethods" : [ "HEAD", "GET" ],
+            "CachedMethods" : [ "HEAD", "GET" ],
+            "ForwardedValues" : {
+              "Headers" : [ "Accept", "x-vf-start-android-id", "x-vf-start-api-key", "x-vf-start-device-model", "x-vf-start-os-version", "x-vf-start-start-type", "x-vf-start-version-code" ],
+              "Cookies" : {
+                "Forward" : "whitelist",
+                "WhitelistedNames" : [ "SSPID" ]
+              },
+              "QueryString" : "false"
+            },
+            "SmoothStreaming" : "false",
+            "Compress" : "true"
+          }, {
+            "PathPattern" : {
+              "Fn::Join" : [ "", [ {
+                "Ref" : "context"
+              }, "proton/*" ] ]
+            },
+            "TargetOriginId" : {
+              "Fn::Join" : [ "-", [ "proton-origin", {
+                "Ref" : "environment"
+              } ] ]
+            },
+            "ViewerProtocolPolicy" : "https-only",
+            "AllowedMethods" : [ "HEAD", "GET" ],
+            "CachedMethods" : [ "HEAD", "GET" ],
+            "ForwardedValues" : {
+              "Headers" : [ "Accept", "x-vf-start-api-key", "x-vf-start-certificate", "x-vf-start-mcc", "x-vf-start-package-name", "x-vf-start-version-code", "x-vf-trace-component-version" ],
+              "Cookies" : {
+                "Forward" : "none"
+              },
+              "QueryString" : "false"
+            },
+            "SmoothStreaming" : "false",
+            "Compress" : "true"
+          }, {
+            "PathPattern" : {
+              "Fn::Join" : [ "", [ {
+                "Ref" : "context"
+              }, "smhs/images/ssp/*" ] ]
+            },
+            "TargetOriginId" : {
+              "Fn::Join" : [ "-", [ "start-origin", {
+                "Ref" : "environment"
+              } ] ]
+            },
+            "ViewerProtocolPolicy" : "allow-all",
+            "AllowedMethods" : [ "HEAD", "GET" ],
+            "CachedMethods" : [ "HEAD", "GET" ],
+            "ForwardedValues" : {
+              "Cookies" : {
+                "Forward" : "none"
+              },
+              "QueryString" : "true"
+            },
+            "SmoothStreaming" : "false",
+            "Compress" : "false"
+          } ],
+          "Comment" : "Distribution for serving API",
+          "DefaultCacheBehavior" : {
+            "AllowedMethods" : [ "GET", "HEAD" ],
+            "CachedMethods" : [ "GET", "HEAD" ],
+            "Compress" : "true",
+            "ForwardedValues" : {
+              "Headers" : [ "Accept", "x-vf-start-api-key", "x-vf-start-certificate", "x-vf-start-mcc", "x-vf-start-package-name", "x-vf-start-version-code" ],
+              "Cookies" : {
+                "Forward" : "none"
+              },
+              "QueryString" : "false"
+            },
+            "SmoothStreaming" : "false",
+            "TargetOriginId" : {
+              "Fn::Join" : [ "-", [ "proton-origin", {
+                "Ref" : "environment"
+              } ] ]
+            },
+            "ViewerProtocolPolicy" : "https-only"
+          },
+          "Enabled" : "true",
+          "HttpVersion" : "http1.1",
+          "Logging" : {
+            "Bucket" : {
+              "Fn::Join" : [ "-", [ "cdn", {
+                "Ref" : "environment"
+              }, "logs.s3.amazonaws.com" ] ]
+            },
+            "IncludeCookies" : "true"
+          },
+          "Origins" : [ {
+            "DomainName" : {
+              "Ref" : "originDomainNameAPI"
+            },
+            "Id" : {
+              "Fn::Join" : [ "-", [ "proton-origin", {
+                "Ref" : "environment"
+              } ] ]
+            },
+            "CustomOriginConfig" : {
+              "HTTPPort" : "80",
+              "HTTPSPort" : "443",
+              "OriginProtocolPolicy" : "https-only",
+              "OriginSSLProtocols" : [ "TLSv1", "TLSv1.1", "TLSv1.2" ]
+            },
+            "OriginCustomHeaders" : [ {
+              "HeaderName" : "x-forwarded-host",
+              "HeaderValue" : {
+                "Fn::Join" : [ ".", [ {
+                  "Ref" : "environment"
+                }, "api.nittner.eu" ] ]
+              }
+            } ]
+          }, {
+            "DomainName" : {
+              "Ref" : "originDomainNameWeb"
+            },
+            "Id" : {
+              "Fn::Join" : [ "-", [ "start-origin", {
+                "Ref" : "environment"
+              } ] ]
+            },
+            "CustomOriginConfig" : {
+              "HTTPPort" : "80",
+              "HTTPSPort" : "443",
+              "OriginProtocolPolicy" : "match-viewer",
+              "OriginSSLProtocols" : [ "TLSv1", "TLSv1.1", "TLSv1.2" ]
+            },
+            "OriginCustomHeaders" : [ {
+              "HeaderName" : "x-forwarded-host",
+              "HeaderValue" : {
+                "Fn::Join" : [ ".", [ {
+                  "Ref" : "environment"
+                }, "api.nittner.eu" ] ]
+              }
+            } ]
+          } ],
+          "PriceClass" : "PriceClass_100"
+        }
+      },
+      "DependsOn" : "LogBucket"
+    }
+  }
+}
