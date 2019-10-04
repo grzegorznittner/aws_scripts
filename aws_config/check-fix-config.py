@@ -59,6 +59,8 @@ def s3_get_bucket_location(bucket_name):
 # sets the access log for given bucket
 # tries to use the same bucket as used for CloudTrail, for buckets located in other regions logs are set in the same bucket
 def s3_set_access_log(bucket_name):
+    global TRAIL_S3_BUCKET_REGION, TRAIL_S3_BUCKET
+    
     bucket_region = s3_get_bucket_location(bucket_name)
     if bucket_name == None:
         print('ERROR: Bucket location cannot be determined, most likely bucket doesn\'t exist')
@@ -70,17 +72,20 @@ def s3_set_access_log(bucket_name):
     if 'LoggingEnabled' in log_def and 'TargetBucket' in log_def['LoggingEnabled']:
         log_bucket = "arn:aws:s3:::" + log_def['LoggingEnabled']['TargetBucket']
         #print(' --- logging target bucket: ' + log_bucket)
+        log_bucket_region = s3_get_bucket_location(log_def['LoggingEnabled']['TargetBucket'])
         if log_def['LoggingEnabled']['TargetPrefix']: 
             log_bucket += "/" + log_def['LoggingEnabled']['TargetPrefix']
-        log_bucket += " " + s3_get_bucket_location(log_def['LoggingEnabled']['TargetBucket'])
+        log_bucket += " " + log_bucket_region
+        print(' -- logging: {}'.format(log_bucket))
+        set_logs = False
         if not log_def['LoggingEnabled']['TargetPrefix'].endswith('/'):
             print(' -- logging needs to be fixed: {}'.format(log_bucket))
             set_logs=True
-        else:
-            print(' -- logging: {}'.format(log_bucket))
-            set_logs=False
+        if bucket_region==TRAIL_S3_BUCKET_REGION and log_def['LoggingEnabled']['TargetBucket']!=TRAIL_S3_BUCKET:
+            print(' -- logging needs to be fixed: {}'.format(log_bucket))
+            set_logs=True
     if set_logs:
-        if bucket_region == TRAIL_S3_BUCKET_REGION:
+        if bucket_region==TRAIL_S3_BUCKET_REGION:
             # set trail bucket as log bucket
             s3_modify_access_log(bucket_name, TRAIL_S3_BUCKET, bucket_name + '/')
         else:
@@ -225,6 +230,7 @@ def vpc_remove_dependencies(vpc):
 
 
 def fix_3_medium_vpc_flow_logs_enabled(vpc_id, vpc_region):
+    global TRAIL_S3_BUCKET_REGION
     vpc = vpc_load(vpc_id, vpc_region)
     if not vpc:
         print('VPC does not exist')
@@ -308,6 +314,7 @@ def get_all_rules():
 
 
 def get_trail_bucket_region():
+    global TRAIL_S3_BUCKET_REGION, TRAIL_S3_BUCKET
     print('######### Cloud Trails #######')
     try:
         AWS_TRAIL_CLIENT = get_client('cloudtrail')
@@ -315,7 +322,7 @@ def get_trail_bucket_region():
         #print(trails['trailList'])
         if len(trails['trailList']) > 0:
             TRAIL_S3_BUCKET = trails['trailList'][0]['S3BucketName']
-            TRAIL_S3_BUCKET_REGION = AWS_S3_CLIENT.get_bucket_location(Bucket=TRAIL_S3_BUCKET)['LocationConstraint']
+            TRAIL_S3_BUCKET_REGION = s3_get_bucket_location(TRAIL_S3_BUCKET)
             print('Cloud trail bucket \'{}\' located in {} will be used for S3 bucket access logs - if we need to set it'.format(TRAIL_S3_BUCKET, TRAIL_S3_BUCKET_REGION))
         else:
             print('!!!!!!!!!!!!!!!! ERROR: Trail bucket and location not recognized')
@@ -393,7 +400,6 @@ LOW_RISKS=3
 
 get_trail_bucket_region()
 check_pcs_config_rules(MEDIUM_RISKS)
-
 
 # list_buckets_resp = AWS_S3_CLIENT.list_buckets()
 # for bucket in list_buckets_resp['Buckets']:
