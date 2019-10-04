@@ -4,6 +4,12 @@ import traceback
 from collections.abc import Iterable
 
 
+#################################################
+# set to True if you want to delete default VPCs
+DELETE_DEFAULT_VPC=True
+#
+#################################################
+
 def get_client(service, region=None):
     if not region:
         return boto3.client(service)
@@ -138,7 +144,6 @@ def s3_apply_https_only_policy(bucket_name):
 
 def fix_1_critical_s3_bucket_correctly_configured(bucket_name):
     try:
-        print('######################################################')
         bucket_location = s3_get_bucket_location(bucket_name)
         if bucket_location:
             print('# Bucket {} - {}'.format(bucket_name, bucket_location) )
@@ -155,25 +160,35 @@ def vpc_load(vpc_id, vpc_region):
     try:
         AWS_EC2_RESOURCE = boto3.resource('ec2', vpc_region)
         vpc = AWS_EC2_RESOURCE.Vpc(vpc_id)
+        vpc.load()
+        return vpc
     except Exception as e:
         print(e)
-        print(traceback.format_exc())
+        #print(traceback.format_exc())
+        return None
 
 
 def vpc_check_if_empty(vpc):
-    subresources = ','.join(map(str, vpc.get_available_subresources()))
-    subresources_str = "empty"
-    if isinstance(subresources, Iterable):
-        subresources_str = ','.join(map(str, subresources))
-    subnets = "empty"
-    if isinstance(vpc.subnets, Iterable):
-        subnets = ','.join(map(str, vpc.subnets))
-    if not subresources and not isinstance(vpc.subnets, Iterable):
-        return True
-    else:
-        print(" -- subresources: " + subresources)
-        print(" -- subnets: " + subnets)
-        return False
+    empty = True
+    for instance in vpc.instances.all():
+        empty = False
+        print(' --- instance {}'.format(instance))
+    for gw in vpc.internet_gateways.all():
+        print(' --- GW {}'.format(gw.id))
+    for rt in vpc.route_tables.all():
+        for rta in rt.associations:
+            if not rta.main:
+                print(' --- route table {}'.format(rta.id))
+    for sg in vpc.security_groups.all():
+        if sg.group_name != 'default':
+            print(" --- security group " + sg.group_name)
+    for netacl in vpc.network_acls.all():
+        if not netacl.is_default:
+            print(" --- NACL " + netacl.id)
+    for subnet in vpc.subnets.all():
+        for interface in subnet.network_interfaces.all():
+            print(" --- subnet network interfaces " + interface.id)
+    return empty
 
 
 # removes vpc dependencies except instances, endpoints and peering connections
@@ -230,14 +245,38 @@ def fix_3_medium_vpc_no_default_vpc(vpc_id, vpc_region):
         print('VPC does not exist')
         return
     if vpc_check_if_empty(vpc):
-        if vpc_region != TRAIL_S3_BUCKET_REGION:
-            print(' -- empty VPC - deleting the VPC')
-            # UNCOMMENT THE FOLLOWING TWO LINES IF YOU'D LIKE TO CLEAN UP DEFAULT VPCs
-            #vpc_remove_dependencies(vpc)
-            #get_client('ec2', vpc_region).delete_vpc(VpcId=vpc_id)
+        if vpc.is_default:
+            print(' -- default vpc {} in region {} should be deleted'.format(vpc_id, vpc_region))
+            if DELETE_DEFAULT_VPC:
+                answer = input('Do you want to delete vpc {} region {}? [Y/n]'.format(vpc_id, vpc_region))
+                if answer == 'Y':
+                    print(' -- deleting the VPC')
+                    # UNCOMMENT THE FOLLOWING TWO LINES IF YOU'D LIKE TO CLEAN UP DEFAULT VPCs
+                    vpc_remove_dependencies(vpc)
+                    get_client('ec2', vpc_region).delete_vpc(VpcId=vpc_id)
         else:
-            print(' -- empty VPC in your main region, please consider deleting it')
+            print(' -- not default vpc {} {}'.format(vpc_id, vpc_region))
+    else:
+        print(' -- vpc is not empty {} {}'.format(vpc_id, vpc_region))
 
+
+def fix_3_medium_vpc_security_group_default_blocked(sg_id, vpc_region):
+    try:
+        ec2 = boto3.resource('ec2', vpc_region)
+        sg = ec2.SecurityGroup(sg_id)
+        sg.load()
+        vpc = vpc_load(sg.vpc_id, vpc_region)
+        print('## SecurityGroup {} {} belongs to vpc id:{} is_default:{} region:{}'.format(sg_id, sg.group_name, sg.vpc_id, vpc.is_default, vpc_region))
+        print(' --- inbound rules:')
+        for ig_perm in sg.ip_permissions:
+            print(' ---- {}'.format(ig_perm))
+        print(' --- outbound rules:')
+        for ig_perm in sg.ip_permissions_egress:
+            print(' ---- {}'.format(ig_perm))
+    except Exception as e:
+        print('## {} - error loading'.format(sg_id))
+        print(e)
+        #print(traceback.format_exc())
 
 
 def get_not_compliant_evaluations(rule_name):
@@ -319,18 +358,31 @@ def check_pcs_config_rules(risk_level):
                 for evaluation in rule_evaluations:
                     resource_id = evaluation['EvaluationResultIdentifier']['EvaluationResultQualifier']['ResourceId']
                     print("## " + evaluation['EvaluationResultIdentifier']['EvaluationResultQualifier']['ResourceType'] + " " + resource_id)
-                    vpc_region = resource_id.split(':')[3]
-                    vpc_id = resource_id[resource_id.index('/') + 1:]
-                    fix_3_medium_vpc_no_default_vpc(vpc_id, vpc_region)
+                    if resource_id.split(':')[5].startswith('vpc/'):
+                        vpc_region = resource_id.split(':')[3]
+                        vpc_id = resource_id[resource_id.index('/') + 1:]
+                        fix_3_medium_vpc_no_default_vpc(vpc_id, vpc_region)
+                    else:
+                        print(' -- not a vpc resource')
                 print()
             elif rule['ConfigRuleName'] == '3_MEDIUM-RECOMMENDED_RESOURCE_TAGGING_FOLLOWED':
                 # we do not print not-tagged resources for now
                 print()
+            elif rule['ConfigRuleName'] == '3_MEDIUM-VPC_SECURITY_GROUP_DEFAULT_BLOCKED':
+                for evaluation in rule_evaluations:
+                    resource_id = evaluation['EvaluationResultIdentifier']['EvaluationResultQualifier']['ResourceId']
+                    if resource_id.split(':')[5].startswith('security_group/'):
+                        vpc_region = resource_id.split(':')[3]
+                        sg_id = resource_id[resource_id.index('/') + 1:]
+                        fix_3_medium_vpc_security_group_default_blocked(sg_id, vpc_region)
+                    else:
+                        print(' -- not a security group resource')
             else:
                 for evaluation in rule_evaluations:
                     print("## " + evaluation['EvaluationResultIdentifier']['EvaluationResultQualifier']['ResourceType']
                         + " " + evaluation['EvaluationResultIdentifier']['EvaluationResultQualifier']['ResourceId'])
     print('##################################')
+    print('')
 
 
 
@@ -340,10 +392,10 @@ MEDIUM_RISKS=2
 LOW_RISKS=3
 
 get_trail_bucket_region()
-#check_pcs_config_rules(MEDIUM_RISKS)
+check_pcs_config_rules(MEDIUM_RISKS)
 
 
-list_buckets_resp = AWS_S3_CLIENT.list_buckets()
-for bucket in list_buckets_resp['Buckets']:
-    fix_1_critical_s3_bucket_correctly_configured(bucket['Name'])
+# list_buckets_resp = AWS_S3_CLIENT.list_buckets()
+# for bucket in list_buckets_resp['Buckets']:
+#     fix_1_critical_s3_bucket_correctly_configured(bucket['Name'])
 
