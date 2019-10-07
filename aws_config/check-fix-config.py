@@ -7,6 +7,7 @@ from collections.abc import Iterable
 #################################################
 # set to True if you want to delete default VPCs
 DELETE_DEFAULT_VPC=True
+DELETE_NOT_COMPLAINT_SG=True
 #
 #################################################
 
@@ -266,23 +267,123 @@ def fix_3_medium_vpc_no_default_vpc(vpc_id, vpc_region):
         print(' -- vpc is not empty {} {}'.format(vpc_id, vpc_region))
 
 
+
+def sg_get_resources(sg_id, vpc_region):
+    security_group_resources = []
+    # Security groups used by classic ELBs
+    AWS_ELB_CLIENT = get_client('elb', vpc_region)
+    elb_dict = AWS_ELB_CLIENT.describe_load_balancers()
+    for elb in elb_dict['LoadBalancerDescriptions']:
+        for j in elb['SecurityGroups']:
+            security_group_resources.append(elb)
+    
+    # Security groups used by ALBs
+    AWS_ALB_CLIENT = get_client('elbv2', vpc_region)
+    elb2_dict = AWS_ALB_CLIENT.describe_load_balancers()
+    for alb in elb2_dict['LoadBalancers']:
+        for j in alb['SecurityGroups']:
+            security_group_resources.append(alb)
+    
+    # Security groups used by RDS
+    AWS_ALB_CLIENT = get_client('rds', vpc_region)
+    rds_dict = AWS_ALB_CLIENT.describe_db_security_groups()
+    
+    for rds in rds_dict['DBSecurityGroups']:
+        for j in rds['EC2SecurityGroups']:
+            security_group_resources.append(rds)
+    return security_group_resources
+
+
+def sg_print_details(sg_id, sg, vpc_region):
+    print('## SecurityGroup id:{} name:{} belongs to vpc id:{} region:{}'.format(sg_id, sg.group_name, sg.vpc_id, vpc_region))
+    print(' --- inbound rules:')
+    for ig_perm in sg.ip_permissions:
+        print('      {}'.format(ig_perm))
+    print(' --- outbound rules:')
+    for ig_perm in sg.ip_permissions_egress:
+        print('      {}'.format(ig_perm))
+    # AWS_EC2_CLIENT = get_client('ec2', vpc_region)
+    # response = AWS_EC2_CLIENT.describe_security_groups(GroupIds=[sg_id])
+    # print(' --- sg describe: {}'.format(json.dumps(response['SecurityGroups'][0], indent=4, sort_keys=True)))
+
+def sg_secure_ingress(ig_perm):
+    if ig_perm['IpRanges']:
+        if 'CidrIp' in ig_perm['IpRanges'][0]:
+            if ig_perm['IpRanges'][0]['CidrIp'] == '0.0.0.0/0':
+                return False        
+    return True
+
+def sg_block_public_ingress(sg, ig_perm):
+    try:
+        # new_ig_perm = ig_perm.deepcopy(ig_perm)
+        sg.revoke_ingress(IpPermissions=[ig_perm])
+        # del new_ig_perm['IpRanges'][0]
+        # sg.authorize_ingress(new_ig_perm)
+    except Exception as e:
+        print(e)
+        print(traceback.format_exc())
+        return None
+
+
+def sg_secure_egress(ig_perm):
+    if ig_perm['IpRanges']:
+        if 'CidrIp' in ig_perm['IpRanges'][0]:
+            if ig_perm['IpRanges'][0]['CidrIp'] == '0.0.0.0/0':
+                return False
+    return True
+
+
+def sg_block_public_egress(sg, ig_perm):
+    try:
+        # new_ig_perm = ig_perm.deepcopy(ig_perm)
+        sg.revoke_egress(IpPermissions=[ig_perm])
+        # del new_ig_perm['IpRanges'][0]
+        # sg.authorize_egress(new_ig_perm)
+    except Exception as e:
+        print(e)
+        print(traceback.format_exc())
+        return None
+
+
+
 def fix_3_medium_vpc_security_group_default_blocked(sg_id, vpc_region):
     try:
         ec2 = boto3.resource('ec2', vpc_region)
         sg = ec2.SecurityGroup(sg_id)
         sg.load()
+        sg_print_details(sg_id, sg, vpc_region)
         vpc = vpc_load(sg.vpc_id, vpc_region)
-        print('## SecurityGroup {} {} belongs to vpc id:{} is_default:{} region:{}'.format(sg_id, sg.group_name, sg.vpc_id, vpc.is_default, vpc_region))
-        print(' --- inbound rules:')
-        for ig_perm in sg.ip_permissions:
-            print(' ---- {}'.format(ig_perm))
-        print(' --- outbound rules:')
-        for ig_perm in sg.ip_permissions_egress:
-            print(' ---- {}'.format(ig_perm))
+        
+        sg_resources = sg_get_resources(sg_id, vpc_region)
+        if sg_resources:
+            for r in sg_resources:
+                print (' --- {}'.format(r))
+        else:
+            print (' --- no associated resources found (ELB,ALB,RDS)')
+            print(' -- default sg {} in region {} should be deleted'.format(sg_id, vpc_region))
+            if DELETE_NOT_COMPLAINT_SG:
+                print(' --- inbound rules:')
+                for ig_perm in sg.ip_permissions:
+                    if not sg_secure_ingress(ig_perm):
+                        print('      {}'.format(ig_perm))
+                        answer = input('Do you want to block inbound traffic to security group {}? [Y/n]'.format(sg_id))
+                        if answer == 'Y':
+                            print(' -- modyfing the Security Group')
+                            sg_block_public_ingress(sg, ig_perm)
+                print(' --- outbound rules:')
+                for ig_perm in sg.ip_permissions_egress:
+                    if not sg_secure_ingress(ig_perm):
+                        print('      {}'.format(ig_perm))
+                        answer = input('Do you want to block outbound traffic from security group {}? [Y/n]'.format(sg_id))
+                        if answer == 'Y':
+                            print(' -- modyfing the Security Group')
+                            sg_block_public_egress(sg, ig_perm)
+                sg.load()
+                sg_print_details(sg_id, sg, vpc_region)
     except Exception as e:
-        print('## {} - error loading'.format(sg_id))
+        print('## {} - error handling security group'.format(sg_id))
         print(e)
-        #print(traceback.format_exc())
+        print(traceback.format_exc())
 
 
 def get_not_compliant_evaluations(rule_name):
