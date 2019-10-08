@@ -7,7 +7,17 @@ from collections.abc import Iterable
 #################################################
 # set to True if you want to delete default VPCs
 DELETE_DEFAULT_VPC=True
-DELETE_NOT_COMPLAINT_SG=True
+MODIFY_NOT_COMPLAINT_SG=True
+
+TAG_ENVIRONMENT = ''
+TAG_PONUMBER = 'PO1234567890'
+TAG_LMENTITY = 'VGSL'
+TAG_BU = 'GROUP-CONSUMER'
+TAG_PROJECT = 'START'
+TAG_MANAGEDBY = 'dl-gt_info_start@vodafone.com'
+TAG_CONFIDENTIALITY = 'C3'
+TAG_VERSION = 'V2.0'
+TAG_BUSINESS_SERVICE = TAG_LMENTITY+'-AWS-'+TAG_PROJECT+'-'+TAG_ENVIRONMENT
 #
 #################################################
 
@@ -17,11 +27,78 @@ def get_client(service, region=None):
     return boto3.client(service, region_name=region)
 
 
-AWS_CONFIG_CLIENT = get_client('config', 'eu-west-1')
 AWS_S3_CLIENT = get_client('s3')
 
 TRAIL_S3_BUCKET = None
 TRAIL_S3_BUCKET_REGION = None
+REGIONS = []
+
+def check_available_regions():
+    global REGIONS
+    try:
+        client = get_client('ec2')
+        REGIONS = [region['RegionName'] for region in client.describe_regions()['Regions']]
+    except Exception as e:
+        print(e)
+
+
+def set_tag_values():
+    global TAG_ENVIRONMENT, TAG_PONUMBER, TAG_LMENTITY, TAG_BU, TAG_PROJECT, TAG_MANAGEDBY
+    global TAG_CONFIDENTIALITY, TAG_VERSION, TAG_BUSINESS_SERVICE
+    print('## Default labels:')
+    print('## TAG_PONUMBER = {}'.format(TAG_PONUMBER))
+    print('## TAG_LMENTITY = {}'.format(TAG_LMENTITY))
+    print('## TAG_BU = {}'.format(TAG_BU))
+    print('## TAG_PROJECT = {}'.format(TAG_PROJECT))
+    print('## TAG_MANAGEDBY = {}'.format(TAG_MANAGEDBY))
+    print('## TAG_CONFIDENTIALITY = {}'.format(TAG_CONFIDENTIALITY))
+    print('## TAG_VERSION = {}'.format(TAG_VERSION))
+    print()
+    while not TAG_ENVIRONMENT in ['SANDBOX', 'MGMT', 'DEV', 'TEST', 'PRE-PROD', 'PROD']:
+        TAG_ENVIRONMENT = input('Please set the environment tag value (allowed values: SANDBOX, MGMT, DEV, TEST, PRE-PROD, PROD)? ')
+    TAG_BUSINESS_SERVICE = TAG_LMENTITY+'-AWS-'+TAG_PROJECT+'-'+TAG_ENVIRONMENT
+
+
+def unset_wrong_tags(client, resource_id):
+    try:
+        response = client.untag_resources(
+            ResourceARNList=[resource_id],
+            TagKeys=['TAG_ENVIRONMENT','TAG_PONUMBER','TAG_LMENTITY','TAG_BU','TAG_PROJECT',
+                'TAG_MANAGEDBY','TAG_CONFIDENTIALITY','TAG_VERSION','TAG_BUSINESS_SERVICE']
+        )
+    except Exception as e:
+        print(e)
+        #print(traceback.format_exc())
+
+
+def fix_2_high_mandatory_resource_tagging_followed(region_name, resource_type, resource_id):
+    global TAG_ENVIRONMENT, TAG_PONUMBER, TAG_LMENTITY, TAG_BU, TAG_PROJECT, TAG_MANAGEDBY
+    global TAG_CONFIDENTIALITY, TAG_VERSION, TAG_BUSINESS_SERVICE
+    if TAG_ENVIRONMENT == '':
+        set_tag_values()
+    
+    try:
+        client = get_client('resourcegroupstaggingapi', region_name)
+        unset_wrong_tags(client, resource_id)
+        client.tag_resources(ResourceARNList=[resource_id],
+            Tags={
+                'Environment': TAG_ENVIRONMENT,
+                'PONumber': TAG_PONUMBER,
+                'LMEntity': TAG_LMENTITY,
+                'BU': TAG_BU,
+                'Project': TAG_PROJECT,
+                'ManagedBy': TAG_MANAGEDBY,
+                'Confidentiality': TAG_CONFIDENTIALITY,
+                'TaggingVersion': TAG_VERSION,
+                'BusinessService': TAG_BUSINESS_SERVICE
+            }
+        )
+        unset_wrong_tags(client, resource_id)
+        print(' -- resource tagged')
+    except Exception as e:
+        print('Error: resource id: {}, region: {}'.format(resource_id, region_name))
+        print(e)
+        #print(traceback.format_exc())
 
 
 def s3_modify_access_log(bucket_name, log_bucket, log_prefix):
@@ -53,7 +130,7 @@ def s3_get_bucket_location(bucket_name):
             return 'us-east-1'
     except Exception as e:
         print(e)
-        print(traceback.format_exc())
+        #print(traceback.format_exc())
         return None
 
 
@@ -294,8 +371,9 @@ def sg_get_resources(sg_id, vpc_region):
     return security_group_resources
 
 
-def sg_print_details(sg_id, sg, vpc_region):
-    print('## SecurityGroup id:{} name:{} belongs to vpc id:{} region:{}'.format(sg_id, sg.group_name, sg.vpc_id, vpc_region))
+def sg_print_details(sg_id, sg, vpc_region, short=False):
+    if not short:
+        print('## SecurityGroup id:{} name:{} belongs to vpc id:{} region:{}'.format(sg_id, sg.group_name, sg.vpc_id, vpc_region))
     print(' --- inbound rules:')
     for ig_perm in sg.ip_permissions:
         print('      {}'.format(ig_perm))
@@ -321,7 +399,7 @@ def sg_block_public_ingress(sg, ig_perm):
         # sg.authorize_ingress(new_ig_perm)
     except Exception as e:
         print(e)
-        print(traceback.format_exc())
+        #print(traceback.format_exc())
         return None
 
 
@@ -341,7 +419,7 @@ def sg_block_public_egress(sg, ig_perm):
         # sg.authorize_egress(new_ig_perm)
     except Exception as e:
         print(e)
-        print(traceback.format_exc())
+        #print(traceback.format_exc())
         return None
 
 
@@ -360,54 +438,58 @@ def fix_3_medium_vpc_security_group_default_blocked(sg_id, vpc_region):
                 print (' --- {}'.format(r))
         else:
             print (' --- no associated resources found (ELB,ALB,RDS)')
-            print(' -- default sg {} in region {} should be deleted'.format(sg_id, vpc_region))
-            if DELETE_NOT_COMPLAINT_SG:
-                print(' --- inbound rules:')
+            sg_modified = False
+            if MODIFY_NOT_COMPLAINT_SG:
+                print(' - Modify inbound rules:')
                 for ig_perm in sg.ip_permissions:
                     if not sg_secure_ingress(ig_perm):
                         print('      {}'.format(ig_perm))
-                        answer = input('Do you want to block inbound traffic to security group {}? [Y/n]'.format(sg_id))
+                        answer = input('Do you want to remove open access rule? [Y/n]')
                         if answer == 'Y':
-                            print(' -- modyfing the Security Group')
+                            print(' -- removing open access rule')
                             sg_block_public_ingress(sg, ig_perm)
-                print(' --- outbound rules:')
+                            sg_modified = True
+                print(' - Modify outbound rules:')
                 for ig_perm in sg.ip_permissions_egress:
                     if not sg_secure_ingress(ig_perm):
                         print('      {}'.format(ig_perm))
-                        answer = input('Do you want to block outbound traffic from security group {}? [Y/n]'.format(sg_id))
+                        answer = input('Do you want to remove open access rule? [Y/n]')
                         if answer == 'Y':
-                            print(' -- modyfing the Security Group')
+                            print(' -- removing open access rule')
                             sg_block_public_egress(sg, ig_perm)
-                sg.load()
-                sg_print_details(sg_id, sg, vpc_region)
+                            sg_modified = True
+                if sg_modified:
+                    sg.load()
+                    print(' - security group rules after changes:')
+                    sg_print_details(sg_id, sg, vpc_region, short=True)
     except Exception as e:
         print('## {} - error handling security group'.format(sg_id))
         print(e)
         print(traceback.format_exc())
 
 
-def get_not_compliant_evaluations(rule_name):
-    all_eval_part = AWS_CONFIG_CLIENT.get_compliance_details_by_config_rule(ConfigRuleName=rule_name, ComplianceTypes=['NON_COMPLIANT'], Limit=100)
+def get_not_compliant_evaluations(client, rule_name):
+    all_eval_part = client.get_compliance_details_by_config_rule(ConfigRuleName=rule_name, ComplianceTypes=['NON_COMPLIANT'], Limit=100)
     all_eval = []
     while True:
         for eva in all_eval_part['EvaluationResults']:
             all_eval.append(eva)
         if 'NextToken' in all_eval_part:
             next_token = all_eval_part['NextToken']
-            all_eval_part = AWS_CONFIG_CLIENT.get_compliance_details_by_config_rule(ConfigRuleName=rule_name, NextToken=next_token, Limit=100)
+            all_eval_part = client.get_compliance_details_by_config_rule(ConfigRuleName=rule_name, NextToken=next_token, Limit=100)
         else:
             break
     return all_eval
 
-def get_all_rules():
-    all_rules_part = AWS_CONFIG_CLIENT.describe_config_rules()
+def get_all_rules(client):
+    all_rules_part = client.describe_config_rules()
     all_rules = []
     while True:
         for rule in all_rules_part['ConfigRules']:
             all_rules.append(rule)
         if 'NextToken' in all_rules_part:
             next_token = all_rules_part['NextToken']
-            all_rules_part = AWS_CONFIG_CLIENT.describe_config_rules(NextToken=next_token)
+            all_rules_part = client.describe_config_rules(NextToken=next_token)
         else:
             break
     return all_rules
@@ -432,63 +514,60 @@ def get_trail_bucket_region():
     print('##############################')
 
 
-def check_pcs_config_rules(risk_level):
+def check_pcs_config_rules(risk_level, region_name):
+    AWS_CONFIG_CLIENT = get_client('config', region_name)
     config_rule_list = {}
     try:
-        config_rule_list = get_all_rules()
+        config_rule_list = get_all_rules(AWS_CONFIG_CLIENT)
     except Exception as e:
         print(e)
     print('######### Config Rules #######')
     for rule in config_rule_list:
         if ord(rule['ConfigRuleName'][0]) - ord('1') < risk_level + 1:
-            rule_evaluations = get_not_compliant_evaluations(rule['ConfigRuleName'])
+            rule_evaluations = get_not_compliant_evaluations(AWS_CONFIG_CLIENT, rule['ConfigRuleName'])
             if len(rule_evaluations) > 0:
-                print("{} - {} not compliant resources - {}".format(rule['ConfigRuleName'], len(rule_evaluations), rule['Description']))
-            if rule['ConfigRuleName'] == '1_CRITICAL-S3_BUCKET_CORRECTLY_CONFIGURED':
-                for evaluation in rule_evaluations:
-                    #print(evaluation)
-                    print("## " + evaluation['EvaluationResultIdentifier']['EvaluationResultQualifier']['ResourceType']
-                        + " " + evaluation['EvaluationResultIdentifier']['EvaluationResultQualifier']['ResourceId'])
-                    fix_1_critical_s3_bucket_correctly_configured(evaluation['EvaluationResultIdentifier']['EvaluationResultQualifier']['ResourceId'])
-                print()
-            elif rule['ConfigRuleName'] == '2_HIGH-MANDATORY_RESOURCE_TAGGING_FOLLOWED':
-                # we do not print not-tagged resources for now
-                print()
-            elif rule['ConfigRuleName'] == '3_MEDIUM-VPC_FLOW_LOGS_ENABLED':
-                for evaluation in rule_evaluations:
-                    resource_id = evaluation['EvaluationResultIdentifier']['EvaluationResultQualifier']['ResourceId']
-                    print("## " + evaluation['EvaluationResultIdentifier']['EvaluationResultQualifier']['ResourceType'] + " " + resource_id)
+                print("###### {} ######".format(rule['ConfigRuleName']))
+                print("## {} not compliant resources - {}".format(len(rule_evaluations), rule['Description']))
+            for evaluation in rule_evaluations:
+                #print(evaluation)
+                resource_id = evaluation['EvaluationResultIdentifier']['EvaluationResultQualifier']['ResourceId']
+                resource_type = evaluation['EvaluationResultIdentifier']['EvaluationResultQualifier']['ResourceType']
+                
+                vpc_region = 'eu-central-1'
+                resource_short_id = resource_id
+                if resource_id.startswith('arn:aws:'):
                     vpc_region = resource_id.split(':')[3]
-                    vpc_id = resource_id[resource_id.index('/') + 1:]
-                    fix_3_medium_vpc_flow_logs_enabled(vpc_id, vpc_region)
-                print()
-            elif rule['ConfigRuleName'] == '3_MEDIUM-VPC_NO_DEFAULT_VPC':
-                for evaluation in rule_evaluations:
-                    resource_id = evaluation['EvaluationResultIdentifier']['EvaluationResultQualifier']['ResourceId']
-                    print("## " + evaluation['EvaluationResultIdentifier']['EvaluationResultQualifier']['ResourceType'] + " " + resource_id)
+                if not vpc_region in REGIONS:
+                    vpc_region = "eu-central-1"
+                if resource_id.find('/') > 0:
+                    resource_short_id = resource_id[resource_id.index('/') + 1:]
+                
+                if resource_type == 'AWS::S3::Bucket':
+                    resource_id = 'arn:aws:s3:::'+resource_id
+                if resource_type == 'AWS::CloudFront::Distribution':
+                    vpc_region = None
+                
+                print("## {} - {}".format(resource_type, resource_id))
+
+                if rule['ConfigRuleName'] == '1_CRITICAL-S3_BUCKET_CORRECTLY_CONFIGURED':
+                    fix_1_critical_s3_bucket_correctly_configured(resource_id)
+                elif rule['ConfigRuleName'] == '2_HIGH-MANDATORY_RESOURCE_TAGGING_FOLLOWED':
+                    fix_2_high_mandatory_resource_tagging_followed(vpc_region, resource_type, resource_id)
+                elif rule['ConfigRuleName'] == '3_MEDIUM-VPC_FLOW_LOGS_ENABLED':
+                    fix_3_medium_vpc_flow_logs_enabled(resource_short_id, vpc_region)
+                elif rule['ConfigRuleName'] == '3_MEDIUM-VPC_NO_DEFAULT_VPC':
                     if resource_id.split(':')[5].startswith('vpc/'):
-                        vpc_region = resource_id.split(':')[3]
-                        vpc_id = resource_id[resource_id.index('/') + 1:]
-                        fix_3_medium_vpc_no_default_vpc(vpc_id, vpc_region)
-                    else:
-                        print(' -- not a vpc resource')
-                print()
-            elif rule['ConfigRuleName'] == '3_MEDIUM-RECOMMENDED_RESOURCE_TAGGING_FOLLOWED':
-                # we do not print not-tagged resources for now
-                print()
-            elif rule['ConfigRuleName'] == '3_MEDIUM-VPC_SECURITY_GROUP_DEFAULT_BLOCKED':
-                for evaluation in rule_evaluations:
-                    resource_id = evaluation['EvaluationResultIdentifier']['EvaluationResultQualifier']['ResourceId']
+                        fix_3_medium_vpc_no_default_vpc(resource_short_id, vpc_region)
+                elif rule['ConfigRuleName'] == '3_MEDIUM-RECOMMENDED_RESOURCE_TAGGING_FOLLOWED':
+                    fix_2_high_mandatory_resource_tagging_followed(vpc_region, resource_type, resource_id)
+                elif rule['ConfigRuleName'] == '3_MEDIUM-VPC_SECURITY_GROUP_DEFAULT_BLOCKED':
                     if resource_id.split(':')[5].startswith('security_group/'):
-                        vpc_region = resource_id.split(':')[3]
-                        sg_id = resource_id[resource_id.index('/') + 1:]
-                        fix_3_medium_vpc_security_group_default_blocked(sg_id, vpc_region)
-                    else:
-                        print(' -- not a security group resource')
-            else:
-                for evaluation in rule_evaluations:
-                    print("## " + evaluation['EvaluationResultIdentifier']['EvaluationResultQualifier']['ResourceType']
-                        + " " + evaluation['EvaluationResultIdentifier']['EvaluationResultQualifier']['ResourceId'])
+                        fix_3_medium_vpc_security_group_default_blocked(resource_short_id, vpc_region)
+                elif rule['ConfigRuleName'] == '3_MEDIUM-RECOMMENDED_RESOURCE_TAGGING_FOLLOWED':
+                    None
+                else:
+                    None
+        print('##')
     print('##################################')
     print('')
 
@@ -499,8 +578,9 @@ HIGH_RISKS=1
 MEDIUM_RISKS=2
 LOW_RISKS=3
 
+check_available_regions()
 get_trail_bucket_region()
-check_pcs_config_rules(MEDIUM_RISKS)
+check_pcs_config_rules(MEDIUM_RISKS, 'eu-west-1')
 
 # list_buckets_resp = AWS_S3_CLIENT.list_buckets()
 # for bucket in list_buckets_resp['Buckets']:
