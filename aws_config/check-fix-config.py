@@ -41,6 +41,24 @@ def check_available_regions():
     except Exception as e:
         print(e)
 
+
+# Method tags given resource list with SecurityZone tag
+# It is not part of regular config check/fix, should be run manually to set that tag
+def ec2_tag_resource_list():
+    resources = {
+        'arn:aws:ec2:eu-central-1:account-id:instance/i-abc1234567890': 'DEV',
+        'arn:aws:ec2:eu-central-1:account-id:internet-gateway/igw-abc1234567890': 'E-O',
+        'arn:aws:ec2:eu-central-1:account-id:network-acl/acl-abc1234567890': 'DEV'
+    }
+
+    for k, v in resources.items():
+        vpc_region = k.split(':')[3]
+        client = get_client('resourcegroupstaggingapi', vpc_region)
+        print('# tagging {} with SecurityZone: {}'.format(k, v))
+        client.tag_resources(ResourceARNList=[k], Tags={'SecurityZone': v} )
+
+
+
 def ec2_describe_tag(region_name, resource_id):
     client = get_client('ec2', region_name)
     result = client.describe_tags(Filters=[
@@ -590,8 +608,7 @@ def check_pcs_config_rules(risk_level, region_name):
                 else:
                     None
         print('##')
-    print('The following resources needs to be tagged manually with tag \'SecurityZone\', allowed values: E-I, E-O, X1, X2, X-A, A, D1, D2')
-    print('Details you can find on https://confluence.sp.vodafone.com/display/GPCS/AWS+Naming+and+Standard')
+    print('The following resources needs to be tagged manually with tag \'SecurityZone\':')
     for resource_id in ec2_special_tagging_resources:
         resource_short_id = resource_id[resource_id.index('/') + 1:]
         vpc_region = resource_id.split(':')[3]
@@ -611,6 +628,9 @@ LOW_RISKS=3
 check_available_regions()
 get_trail_bucket_region()
 check_pcs_config_rules(MEDIUM_RISKS, 'eu-west-1')
+
+#ec2_tag_resource_list()
+
 
 # list_buckets_resp = AWS_S3_CLIENT.list_buckets()
 # for bucket in list_buckets_resp['Buckets']:
