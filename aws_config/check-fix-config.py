@@ -41,6 +41,16 @@ def check_available_regions():
     except Exception as e:
         print(e)
 
+def ec2_describe_tag(region_name, resource_id):
+    client = get_client('ec2', region_name)
+    result = client.describe_tags(Filters=[
+        {
+            'Name': 'resource-id',
+            'Values': [ resource_id ]
+        }
+    ])
+    return result['Tags']
+
 
 def set_tag_values():
     global TAG_ENVIRONMENT, TAG_PONUMBER, TAG_LMENTITY, TAG_BU, TAG_PROJECT, TAG_MANAGEDBY
@@ -71,29 +81,40 @@ def unset_wrong_tags(client, resource_id):
         #print(traceback.format_exc())
 
 
+def cloudfront_tag_resource(resource_id, tags):
+    items = []
+    for k, v in tags.items():
+        items.append({'Key': k, 'Value': v})
+    #print(items)
+    client = get_client('cloudfront')
+    client.tag_resource(Resource=resource_id, Tags={ 'Items': items})
+
+
 def fix_2_high_mandatory_resource_tagging_followed(region_name, resource_type, resource_id):
     global TAG_ENVIRONMENT, TAG_PONUMBER, TAG_LMENTITY, TAG_BU, TAG_PROJECT, TAG_MANAGEDBY
     global TAG_CONFIDENTIALITY, TAG_VERSION, TAG_BUSINESS_SERVICE
     if TAG_ENVIRONMENT == '':
         set_tag_values()
+    tags = {
+        'Environment': TAG_ENVIRONMENT,
+        'PONumber': TAG_PONUMBER,
+        'LMEntity': TAG_LMENTITY,
+        'BU': TAG_BU,
+        'Project': TAG_PROJECT,
+        'ManagedBy': TAG_MANAGEDBY,
+        'Confidentiality': TAG_CONFIDENTIALITY,
+        'TaggingVersion': TAG_VERSION,
+        'BusinessService': TAG_BUSINESS_SERVICE
+    }
     
     try:
-        client = get_client('resourcegroupstaggingapi', region_name)
-        unset_wrong_tags(client, resource_id)
-        client.tag_resources(ResourceARNList=[resource_id],
-            Tags={
-                'Environment': TAG_ENVIRONMENT,
-                'PONumber': TAG_PONUMBER,
-                'LMEntity': TAG_LMENTITY,
-                'BU': TAG_BU,
-                'Project': TAG_PROJECT,
-                'ManagedBy': TAG_MANAGEDBY,
-                'Confidentiality': TAG_CONFIDENTIALITY,
-                'TaggingVersion': TAG_VERSION,
-                'BusinessService': TAG_BUSINESS_SERVICE
-            }
-        )
-        unset_wrong_tags(client, resource_id)
+        if resource_type == 'AWS::CloudFront::Distribution':
+            # cloudfront needs to he tagged using cloudfront api which uses different parameters
+            cloudfront_tag_resource(resource_id, tags)
+        else:
+            client = get_client('resourcegroupstaggingapi', region_name)
+            unset_wrong_tags(client, resource_id)
+            client.tag_resources(ResourceARNList=[resource_id], Tags=tags)
         print(' -- resource tagged')
     except Exception as e:
         print('Error: resource id: {}, region: {}'.format(resource_id, region_name))
@@ -388,15 +409,14 @@ def sg_secure_ingress(ig_perm):
     if ig_perm['IpRanges']:
         if 'CidrIp' in ig_perm['IpRanges'][0]:
             if ig_perm['IpRanges'][0]['CidrIp'] == '0.0.0.0/0':
-                return False        
+                return False
+    if ig_perm['IpProtocol'] == '-1':
+        return False
     return True
 
 def sg_block_public_ingress(sg, ig_perm):
     try:
-        # new_ig_perm = ig_perm.deepcopy(ig_perm)
         sg.revoke_ingress(IpPermissions=[ig_perm])
-        # del new_ig_perm['IpRanges'][0]
-        # sg.authorize_ingress(new_ig_perm)
     except Exception as e:
         print(e)
         #print(traceback.format_exc())
@@ -408,15 +428,14 @@ def sg_secure_egress(ig_perm):
         if 'CidrIp' in ig_perm['IpRanges'][0]:
             if ig_perm['IpRanges'][0]['CidrIp'] == '0.0.0.0/0':
                 return False
+    if ig_perm['IpProtocol'] == '-1':
+        return False
     return True
 
 
 def sg_block_public_egress(sg, ig_perm):
     try:
-        # new_ig_perm = ig_perm.deepcopy(ig_perm)
         sg.revoke_egress(IpPermissions=[ig_perm])
-        # del new_ig_perm['IpRanges'][0]
-        # sg.authorize_egress(new_ig_perm)
     except Exception as e:
         print(e)
         #print(traceback.format_exc())
@@ -440,20 +459,20 @@ def fix_3_medium_vpc_security_group_default_blocked(sg_id, vpc_region):
             print (' --- no associated resources found (ELB,ALB,RDS)')
             sg_modified = False
             if MODIFY_NOT_COMPLAINT_SG:
-                print(' - Modify inbound rules:')
+                print(' - Securing inbound rules:')
                 for ig_perm in sg.ip_permissions:
                     if not sg_secure_ingress(ig_perm):
                         print('      {}'.format(ig_perm))
-                        answer = input('Do you want to remove open access rule? [Y/n]')
+                        answer = input('Do you want to remove open access rule? [Y/n] ')
                         if answer == 'Y':
                             print(' -- removing open access rule')
                             sg_block_public_ingress(sg, ig_perm)
                             sg_modified = True
-                print(' - Modify outbound rules:')
+                print(' - Securing outbound rules:')
                 for ig_perm in sg.ip_permissions_egress:
                     if not sg_secure_ingress(ig_perm):
                         print('      {}'.format(ig_perm))
-                        answer = input('Do you want to remove open access rule? [Y/n]')
+                        answer = input('Do you want to remove open access rule? [Y/n] ')
                         if answer == 'Y':
                             print(' -- removing open access rule')
                             sg_block_public_egress(sg, ig_perm)
@@ -521,6 +540,7 @@ def check_pcs_config_rules(risk_level, region_name):
         config_rule_list = get_all_rules(AWS_CONFIG_CLIENT)
     except Exception as e:
         print(e)
+    ec2_special_tagging_resources = []
     print('######### Config Rules #######')
     for rule in config_rule_list:
         if ord(rule['ConfigRuleName'][0]) - ord('1') < risk_level + 1:
@@ -552,6 +572,8 @@ def check_pcs_config_rules(risk_level, region_name):
                 if rule['ConfigRuleName'] == '1_CRITICAL-S3_BUCKET_CORRECTLY_CONFIGURED':
                     fix_1_critical_s3_bucket_correctly_configured(resource_id)
                 elif rule['ConfigRuleName'] == '2_HIGH-MANDATORY_RESOURCE_TAGGING_FOLLOWED':
+                    if resource_id.startswith('arn:aws:ec2') and not resource_id in ec2_special_tagging_resources:
+                        ec2_special_tagging_resources.append(resource_id)
                     fix_2_high_mandatory_resource_tagging_followed(vpc_region, resource_type, resource_id)
                 elif rule['ConfigRuleName'] == '3_MEDIUM-VPC_FLOW_LOGS_ENABLED':
                     fix_3_medium_vpc_flow_logs_enabled(resource_short_id, vpc_region)
@@ -559,15 +581,23 @@ def check_pcs_config_rules(risk_level, region_name):
                     if resource_id.split(':')[5].startswith('vpc/'):
                         fix_3_medium_vpc_no_default_vpc(resource_short_id, vpc_region)
                 elif rule['ConfigRuleName'] == '3_MEDIUM-RECOMMENDED_RESOURCE_TAGGING_FOLLOWED':
+                    if resource_id.startswith('arn:aws:ec2') and not resource_id in ec2_special_tagging_resources:
+                        ec2_special_tagging_resources.append(resource_id)
                     fix_2_high_mandatory_resource_tagging_followed(vpc_region, resource_type, resource_id)
                 elif rule['ConfigRuleName'] == '3_MEDIUM-VPC_SECURITY_GROUP_DEFAULT_BLOCKED':
                     if resource_id.split(':')[5].startswith('security_group/'):
                         fix_3_medium_vpc_security_group_default_blocked(resource_short_id, vpc_region)
-                elif rule['ConfigRuleName'] == '3_MEDIUM-RECOMMENDED_RESOURCE_TAGGING_FOLLOWED':
-                    None
                 else:
                     None
         print('##')
+    print('The following resources needs to be tagged manually with tag \'SecurityZone\', allowed values: E-I, E-O, X1, X2, X-A, A, D1, D2')
+    print('Details you can find on https://confluence.sp.vodafone.com/display/GPCS/AWS+Naming+and+Standard')
+    for resource_id in ec2_special_tagging_resources:
+        resource_short_id = resource_id[resource_id.index('/') + 1:]
+        vpc_region = resource_id.split(':')[3]
+        tags = ec2_describe_tag(vpc_region, resource_short_id)
+        zone = [tag['Value'] for tag in tags if tag['Key']=='SecurityZone']
+        print('# {} SecurityZone: {}'.format(resource_id, zone))
     print('##################################')
     print('')
 
