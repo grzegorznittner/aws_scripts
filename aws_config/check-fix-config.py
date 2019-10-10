@@ -581,6 +581,7 @@ def check_pcs_config_rules(risk_level, region_name):
                     resource_short_id = resource_id[resource_id.index('/') + 1:]
                 
                 if resource_type == 'AWS::S3::Bucket':
+                    resource_short_id = resource_id
                     resource_id = 'arn:aws:s3:::'+resource_id
                 if resource_type == 'AWS::CloudFront::Distribution':
                     vpc_region = None
@@ -588,7 +589,7 @@ def check_pcs_config_rules(risk_level, region_name):
                 print("## {} - {}".format(resource_type, resource_id))
 
                 if rule['ConfigRuleName'] == '1_CRITICAL-S3_BUCKET_CORRECTLY_CONFIGURED':
-                    fix_1_critical_s3_bucket_correctly_configured(resource_id)
+                    fix_1_critical_s3_bucket_correctly_configured(resource_short_id)
                 elif rule['ConfigRuleName'] == '2_HIGH-MANDATORY_RESOURCE_TAGGING_FOLLOWED':
                     if resource_id.startswith('arn:aws:ec2') and not resource_id in ec2_special_tagging_resources:
                         ec2_special_tagging_resources.append(resource_id)
@@ -619,6 +620,21 @@ def check_pcs_config_rules(risk_level, region_name):
     print('')
 
 
+def set_environment():
+    global TAG_ENVIRONMENT
+    aliases = boto3.client('iam').list_account_aliases()
+    if aliases['AccountAliases']:
+        account_alias = aliases['AccountAliases'][0]
+        if account_alias == 'start-dev':
+            TAG_ENVIRONMENT = 'DEV'
+        elif account_alias == 'start-preprod':
+            TAG_ENVIRONMENT = 'PRE-PROD'
+        elif account_alias == 'start-prod':
+            TAG_ENVIRONMENT = 'PROD'
+        elif account_alias == 'start-tools':
+            TAG_ENVIRONMENT = 'MGMT'
+        else:
+            TAG_ENVIRONMENT = ''
 
 
 HIGH_RISKS=1
@@ -627,7 +643,10 @@ LOW_RISKS=3
 
 check_available_regions()
 get_trail_bucket_region()
+set_environment()
+
 check_pcs_config_rules(MEDIUM_RISKS, 'eu-west-1')
+
 
 #ec2_tag_resource_list()
 
